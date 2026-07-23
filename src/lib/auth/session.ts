@@ -11,7 +11,20 @@ export const SESSION_COOKIE = "visiora_session"
 const ISSUER = "visiora.dashboard"
 const AUDIENCE = "visiora.web"
 
-const secretKey = new TextEncoder().encode(env.AUTH_SECRET)
+/**
+ * Derives the signing key on first use rather than at module load.
+ *
+ * `next build` imports this module to collect page data, and runtime secrets
+ * are typically injected only after the build — reading AUTH_SECRET at import
+ * time therefore broke the build on every platform that works that way.
+ * Memoised, so the key is still derived only once per process.
+ */
+let cachedSecretKey: Uint8Array | null = null
+
+function getSecretKey(): Uint8Array {
+  cachedSecretKey ??= new TextEncoder().encode(env.AUTH_SECRET)
+  return cachedSecretKey
+}
 
 /**
  * Signs the session as a JWT.
@@ -30,7 +43,7 @@ export async function createSessionToken(
     .setIssuer(ISSUER)
     .setAudience(AUDIENCE)
     .setExpirationTime(`${maxAgeSeconds}s`)
-    .sign(secretKey)
+    .sign(getSecretKey())
 }
 
 /**
@@ -42,7 +55,7 @@ export async function createSessionToken(
  */
 export async function verifySessionToken(token: string): Promise<SessionUser | null> {
   try {
-    const { payload } = await jwtVerify(token, secretKey, {
+    const { payload } = await jwtVerify(token, getSecretKey(), {
       issuer: ISSUER,
       audience: AUDIENCE,
       algorithms: ["HS256"], // Pinned: prevents an `alg: none` downgrade.

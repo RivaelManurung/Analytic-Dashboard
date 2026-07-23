@@ -98,6 +98,29 @@ class SeededAnalyticsRepository implements AnalyticsRepository {
   }
 }
 
-export const analyticsRepository: AnalyticsRepository = new SeededAnalyticsRepository(
-  env.ANALYTICS_SEED
-)
+/**
+ * Lazily constructed singleton.
+ *
+ * Reading `env.ANALYTICS_SEED` at module scope would validate the environment
+ * during `next build`, when runtime secrets are not yet injected — which broke
+ * the production build. Deferring construction to the first call keeps this
+ * module import side-effect free while still creating the instance only once.
+ */
+let instance: AnalyticsRepository | null = null
+
+function getRepository(): AnalyticsRepository {
+  instance ??= new SeededAnalyticsRepository(env.ANALYTICS_SEED)
+  return instance
+}
+
+/** Stable façade so callers keep importing a plain object. */
+export const analyticsRepository: AnalyticsRepository = {
+  getOverview: (query) => getRepository().getOverview(query),
+  getMetricDetail: (key, query) => getRepository().getMetricDetail(key, query),
+  listPosts: (query) => getRepository().listPosts(query),
+}
+
+/** Test-only: forces the next call to rebuild with the current env. */
+export function __resetRepository(): void {
+  instance = null
+}
