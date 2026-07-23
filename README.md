@@ -1,36 +1,248 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Visiora — Analytics Dashboard Starter Kit
 
-## Getting Started
+A production-grade analytics dashboard built on **Next.js 16**, React 19.2, Tailwind 4, and
+shadcn/ui (Base UI). Typed end to end, tested to an enforced coverage gate, and accessible by
+construction rather than by afterthought.
 
-First, run the development server:
+> Every figure is generated from a fixed seed. No real account, person, or company is described
+> anywhere in this repository.
+
+---
+
+## Quick start
 
 ```bash
+npm install
+cp .env.example .env.local
+
+# Generate a session signing key — the app refuses to start without one.
+echo "AUTH_SECRET=\"$(openssl rand -base64 48)\"" >> .env.local
+
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open <http://localhost:3000>. Sign in with any demo account:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Role    | Email                 | Password                |
+| ------- | --------------------- | ----------------------- |
+| Owner   | `owner@visiora.app`   | `demo-password-owner`   |
+| Analyst | `analyst@visiora.app` | `demo-password-analyst` |
+| Viewer  | `viewer@visiora.app`  | `demo-password-viewer`  |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Sign in as each to see role-based access in action — a viewer cannot reach billing, the team page,
+or the export endpoint.
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## Scripts
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Command                 | What it does                           |
+| ----------------------- | -------------------------------------- |
+| `npm run dev`           | Dev server (Turbopack)                 |
+| `npm run build`         | Production build; fails on type errors |
+| `npm run typecheck`     | `next typegen` + `tsc --noEmit`        |
+| `npm run lint`          | ESLint                                 |
+| `npm run format`        | Prettier, with Tailwind class sorting  |
+| `npm run test`          | Vitest unit and component tests        |
+| `npm run test:coverage` | Vitest with the 80% coverage gate      |
+| `npm run test:e2e`      | Playwright end-to-end tests            |
+| `npm run test:a11y`     | Playwright accessibility scan (axe)    |
+| `npm run verify`        | Everything CI runs, in one command     |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## Architecture
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```text
+src/
+├── app/
+│   ├── (auth)/          login, register, forgot/reset password
+│   ├── (dashboard)/     every authenticated page
+│   ├── api/analytics/   route handlers (overview, metrics, posts, export)
+│   ├── terms, privacy   public legal pages
+│   └── robots.ts, sitemap.ts, opengraph-image.tsx
+├── components/
+│   ├── charts/          chart primitives + the ChartCard shell
+│   ├── dashboard/       metric cards, filters, command palette
+│   ├── data-table/      TanStack Table wrapper
+│   ├── layouts/         sidebar, header, user menu
+│   ├── states/          empty, error, and skeleton states
+│   ├── workspace/       team, activity, settings, profile
+│   └── ui/              vendored shadcn primitives
+├── config/              menu tree, site identity
+├── hooks/               URL filter state, breakpoint
+├── lib/
+│   ├── api/             response envelope, rate limiting, query parsing
+│   ├── auth/            session (JWT), users (scrypt), server actions
+│   ├── data/            generator, repository, metric catalog
+│   └── schemas/         Zod schemas — the single source of truth for types
+└── proxy.ts             auth gate + per-request CSP nonce
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Data flow
+
+```text
+Server Component
+      ↓  validated AnalyticsQuery (Zod)
+analyticsRepository        ← the only interface pages depend on
+      ↓
+seeded generator           ← swap for Prisma/Drizzle without touching the UI
+      ↓  parsed against the published schema
+Overview / MetricDetail
+```
+
+`AnalyticsRepository` is a plain interface. To move onto a real database, implement it against your
+ORM and change one line at the bottom of `src/lib/data/repository.ts`. No UI code changes.
+
+### Types come from schemas
+
+Every domain type is inferred from a Zod schema, never hand-written twice:
+
+```ts
+export const metricSummarySchema = z.object({ ... })
+export type MetricSummary = z.infer<typeof metricSummarySchema>
+```
+
+A schema change therefore surfaces as a type error at every call site, rather than as a runtime
+surprise.
+
+---
+
+## Next.js 16 notes
+
+This project targets Next.js 16, which has breaking changes relative to 15:
+
+- **`middleware.ts` is now `proxy.ts`**, exporting `proxy()`. The runtime is Node.js and is not
+  configurable — which is what lets it verify a JWT with `jose`.
+- **`params` and `searchParams` are Promises** and must be awaited.
+- **`PageProps<'/route'>` / `LayoutProps`** are generated by `next typegen` and give full type
+  safety on route params.
+- **`revalidateTag` takes a second `cacheLife` argument.**
+- **Turbopack is the default** for both `dev` and `build`.
+- `typedRoutes` is enabled, so a `Link` to a route that does not exist fails the build.
+
+### Two traps that a green build will not catch
+
+Both of these cost a fully passing `build` + `tsc` + unit suite here before an end-to-end run
+found them. They are guarded now — the guards are worth keeping.
+
+**1. A `"use server"` file may export only async functions.**
+Exporting a plain object from one throws
+`A "use server" file can only export async functions, found object` at module-evaluation time and
+takes down the whole app at runtime. Neither `next build` nor `tsc` reports it. Non-function
+exports live in [`src/lib/auth/action-state.ts`](src/lib/auth/action-state.ts) for this reason, and
+[`actions.contract.test.ts`](src/lib/auth/actions.contract.test.ts) asserts the rule.
+
+**2. A nonce-based CSP requires dynamic rendering.**
+A statically prerendered page has its HTML built once, so `proxy.ts` cannot stamp a per-request
+nonce onto its script tags. Adding `'strict-dynamic'` then makes the browser ignore `'self'` and
+refuse every Next.js chunk — on exactly the pages a signed-out visitor sees. The public routes
+therefore set `export const dynamic = "force-dynamic"`, and `'strict-dynamic'` is deliberately
+omitted; both decisions are commented where they are made.
+
+---
+
+## Security
+
+| Control                                                                       | Where                       |
+| ----------------------------------------------------------------------------- | --------------------------- |
+| Nonce-based CSP, no `unsafe-inline` scripts                                   | `src/proxy.ts`              |
+| HSTS, `nosniff`, `X-Frame-Options: DENY`, Referrer-Policy, Permissions-Policy | `next.config.ts`            |
+| Session as a signed JWT in an `httpOnly`, `SameSite=Lax` cookie               | `src/lib/auth/session.ts`   |
+| Passwords hashed with scrypt + per-user salt, verified in constant time       | `src/lib/auth/users.ts`     |
+| Account-enumeration resistance on login, register, and reset                  | `src/lib/auth/actions.ts`   |
+| Rate limiting on every endpoint, tightest on credentials                      | `src/lib/api/rate-limit.ts` |
+| Zod validation at every boundary (URL, body, params)                          | `src/lib/schemas/**`        |
+| CSV formula-injection protection on export                                    | `src/lib/csv.ts`            |
+| RBAC enforced server-side, not by hiding links                                | `requireRole()` per page    |
+| Errors never leak internals to the client                                     | `src/lib/api/response.ts`   |
+
+### Known limitations — read before deploying
+
+These are honest gaps in the starter kit, not oversights:
+
+1. **Rate limiting is in-process.** Counters live in one Node process, so they are not shared across
+   instances and are lost on restart. Behind a load balancer this degrades to roughly
+   `limit × instanceCount`. Swap in Redis (`@upstash/ratelimit`) for production —
+   `checkRateLimit()` keeps the same signature.
+2. **The user store is in memory.** Accounts created through sign-up vanish on restart. Replace
+   `src/lib/auth/users.ts` with a real table.
+3. **Password reset is not wired.** `resetPasswordAction` validates its input but does not verify a
+   single-use expiring token — implement that before shipping.
+4. **`x-forwarded-for` is only trustworthy behind a proxy** that overwrites it (Vercel, Cloudflare,
+   an ingress you control). On a direct-to-Node deployment a client can forge it.
+5. **`style-src` still allows `'unsafe-inline'`**, because Recharts and next-themes set inline
+   styles and there is no nonce path for them. Documented and accepted.
+6. **The legal pages are templates, not legal advice.** Replace them.
+
+---
+
+## Accessibility & data visualisation
+
+The chart palette is not a matter of taste. It was checked with a validator against both surfaces:
+
+- **Light** (`#ffffff`): worst adjacent colourblind separation ΔE 9.1, normal-vision ΔE 19.6
+- **Dark** (`#17171a`): worst adjacent ΔE 8.4, normal-vision ΔE 19.3, all slots ≥ 3:1 contrast
+
+Three light-mode slots fall below 3:1 against the card surface, which triggers the **relief rule**:
+every chart therefore ships direct labels _and_ a table view. The table toggle in each chart card is
+a requirement, not a nicety — do not remove it.
+
+Other rules the codebase holds to:
+
+- **Never a dual-axis chart.** Two y-scales let any two series be made to look correlated.
+- **Colour slots are fixed per entity and never cycled.** A ninth series folds into "Other".
+- **Sequential data uses one hue, light to dark**; the funnel ramp is validated separately as an
+  ordinal scale.
+- Status colours (good / warning / critical) are reserved and never reused as a data series.
+- Every chart is reachable by keyboard, and every figure is announced in full to a screen reader
+  even where the visible label is abbreviated.
+
+`npm run test:a11y` runs axe against 20 routes in both light and dark mode.
+
+---
+
+## Testing
+
+| Layer             | Tool                     | What it covers                                                    |
+| ----------------- | ------------------------ | ----------------------------------------------------------------- |
+| Units, components | Vitest + Testing Library | Formatters, schemas, generator, auth, every interactive component |
+| End to end        | Playwright               | Auth flows, RBAC, filtering, export, security headers             |
+| Accessibility     | Playwright + axe         | 20 routes, light and dark, keyboard paths                         |
+
+Coverage is gated at 80% and CI fails below it. Next.js file conventions (`app/**`, `proxy.ts`) are
+excluded from the unit gate and covered by Playwright instead — a jsdom render of a Server Component
+proves far less than driving the real thing.
+
+---
+
+## Deployment
+
+```bash
+npm run build
+npm run start
+```
+
+For a container image, opt into the self-contained bundle. It is off by default
+because `output: "standalone"` is incompatible with `next start`:
+
+```bash
+NEXT_OUTPUT=standalone npm run build
+node .next/standalone/server.js
+```
+
+Required environment variables:
+
+| Variable               | Required    | Notes                                                                 |
+| ---------------------- | ----------- | --------------------------------------------------------------------- |
+| `AUTH_SECRET`          | **yes**     | ≥ 32 chars. No insecure fallback — the app will not start without it. |
+| `NEXT_PUBLIC_APP_URL`  | recommended | Canonical URLs, sitemap, OG images                                    |
+| `AUTH_SESSION_MAX_AGE` | no          | Seconds; default 86400                                                |
+| `ANALYTICS_SEED`       | no          | Changes the generated dataset                                         |
+
+---
+
+## Licence
+
+MIT. Read the limitations section before using any of this with real user data.
+# Analytic-Dashboard
