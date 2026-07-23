@@ -30,8 +30,15 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files — never commit real values, but DO commit the template
 .env*
+!.env.example
+
+# test artifacts
+/playwright-report
+/test-results
+/blob-report
+/playwright/.cache
 
 # vercel
 .vercel
